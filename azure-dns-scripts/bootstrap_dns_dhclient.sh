@@ -16,7 +16,12 @@
 # limitations under the License.
 #
 
-# cat a here-doc represenation of the hooks to the appropriate file
+#
+# CentOS and RHEL 6 use dhclient. Add a script to be automatically invoked when interface comes up.
+#
+# dhclient-exit-hooks explained in dhclient-script man page: http://linux.die.net/man/8/dhclient-script
+# cat a here-doc representation of the hooks to the appropriate file
+#
 cat > /etc/dhcp/dhclient-exit-hooks <<"EOF"
 #!/bin/bash
 printf "\ndhclient-exit-hooks running...\n\treason:%s\n\tinterface:%s\n" "${reason:?}" "${interface:?}"
@@ -26,13 +31,11 @@ then
     exit 0;
 fi
 # when we have a new IP, perform nsupdate
-if [ "$reason" = BOUND ] || [ "$reason" = RENEW ] ||
-   [ "$reason" = REBIND ] || [ "$reason" = REBOOT ]
+if [ "$reason" = BOUND ] || [ "$reason" = RENEW ] || [ "$reason" = REBIND ] || [ "$reason" = REBOOT ]
 then
     printf "\tnew_ip_address:%s\n" "${new_ip_address:?}"
     host=$(hostname -s)
-    domain=$(hostname | cut -d'.' -f2- -s)
-    domain=${domain:='cdh-cluster.internal'} # If no hostname is provided, use cdh-cluster.internal
+    domain=$(nslookup $(grep -i nameserver /etc/resolv.conf | cut -d ' ' -f 2) | grep -i name | cut -d ' ' -f 3 | cut -d '.' -f 2- | rev | cut -c 2- | rev)
     IFS='.' read -ra ipparts <<< "$new_ip_address"
     ptrrec="$(printf %s "$new_ip_address." | tac -s.)in-addr.arpa"
     nsupdatecmds=$(mktemp -t nsupdate.XXXXXXXXXX)
@@ -57,3 +60,19 @@ exit 0;
 EOF
 chmod 755 /etc/dhcp/dhclient-exit-hooks
 service network restart
+
+# Confirm DNS record has been updated, retry if update did not work
+i=0
+until [ $i -ge 5 ]
+do
+    sleep 5
+    i=$((i+1))
+    hostname | nslookup && break
+    service network restart
+done
+
+if [ $i -ge 5 ]; then
+    echo "DNS update failed"
+    exit 1
+fi
+exit 0
